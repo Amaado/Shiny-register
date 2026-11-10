@@ -12,7 +12,10 @@ const els = {
   navAccountCount: $('#navAccountCount'), sidebarUser: $('#sidebarUser'),
   drawer: $('#detailDrawer'), drawerContent: $('#drawerContent'), backdrop: $('#drawerBackdrop'),
 };
-const STORAGE_SESSION = 'shiny-register-web-session-v1';
+// Un registro persistente solo si el usuario marca «Mantener sesión iniciada».
+const STORAGE_SESSION = 'shiny-register-web-session-v2';
+const LEGACY_SESSION = 'shiny-register-web-session-v1';
+let sessionPersistence = 'session';
 let authMode = 'login';
 const BUCKET = SUPABASE_STORAGE_BUCKET || 'shiny-register';
 const BASE = String(SUPABASE_URL || '').replace(/\/+$/, '');
@@ -79,7 +82,7 @@ async function fetchJSON(path, { method = 'GET', body = null, authenticated = tr
   return value;
 }
 function saveSession(value) {
-  // Guardar solo tokens de SUPABASE, nunca tokens de la cuenta Google.
+  if (!value?.access_token || !value?.refresh_token) throw new Error('Sesión de Supabase incompleta.');
   state.session = {
     access_token: value.access_token,
     refresh_token: value.refresh_token,
@@ -87,11 +90,34 @@ function saveSession(value) {
     user_id: value.user?.id || value.user_id || state.session?.user_id || null,
     expires_at: Date.now() + Math.max(0, (Number(value.expires_in) || 3600) - 30) * 1000,
   };
-  localStorage.setItem(STORAGE_SESSION, JSON.stringify(state.session));
+  // Nunca conservar la contraseña. Únicamente tokens de sesión de Supabase.
+  const destination = sessionPersistence === 'local' ? localStorage : sessionStorage;
+  const other = sessionPersistence === 'local' ? sessionStorage : localStorage;
+  destination.setItem(STORAGE_SESSION, JSON.stringify(state.session));
+  other.removeItem(STORAGE_SESSION);
 }
 function clearSession() {
   localStorage.removeItem(STORAGE_SESSION);
+  sessionStorage.removeItem(STORAGE_SESSION);
+  localStorage.removeItem(LEGACY_SESSION);
   state.session = null; state.user = null; imageCache.clear();
+}
+function restoreStoredSession() {
+  // Las sesiones de versiones anteriores (Google / persistencia obligatoria) no se migran.
+  localStorage.removeItem(LEGACY_SESSION);
+  for (const [storage, mode] of [[localStorage, 'local'], [sessionStorage, 'session']]) {
+    try {
+      const saved = JSON.parse(storage.getItem(STORAGE_SESSION) || 'null');
+      if (saved?.refresh_token && saved?.access_token) {
+        state.session = saved;
+        sessionPersistence = mode;
+        $('#rememberSession').checked = mode === 'local';
+        return true;
+      }
+    } catch { /* Ignorar datos corruptos. */ }
+    storage.removeItem(STORAGE_SESSION);
+  }
+  return false;
 }
 async function refreshSession() {
   if (!state.session?.refresh_token) throw new Error('La sesión ha caducado. Vuelve a entrar.');
@@ -109,49 +135,69 @@ async function ensureToken() {
   if (!state.session) throw new Error('Inicia sesión para continuar.');
   if (Date.now() >= (state.session.expires_at || 0)) await refreshSession();
 }
+function setAuthMessage(message = '', type = 'error') {
+  els.loginError.textContent = type === 'error' ? message : '';
+  $('#authNotice').textContent = type === 'success' ? message : '';
+}
 function setAuthMode(mode) {
   authMode = mode === 'register' ? 'register' : 'login';
   const registering = authMode === 'register';
   $('#loginTitle').innerHTML = registering
-    ? 'Crea tu cuenta.<br /><span>Empieza con Google.</span>'
+    ? 'Crea tu cuenta.<br /><span>Organiza tu colección.</span>'
     : 'Todo lo que has capturado.<br /><span>En un solo lugar.</span>';
   $('#authIntro').textContent = registering
-    ? 'Regístrate sin crear una contraseña nueva. Tu acceso al inventario deberá ser autorizado.'
+    ? 'Regístrate con tu correo y contraseña para solicitar acceso al inventario.'
     : 'Tus Pokémon, sus variantes y las cuentas en las que están. Sin complicaciones.';
-  $('#googleButtonLabel').textContent = registering ? 'Registrarme con Google' : 'Continuar con Google';
-  $('#googleHelp').textContent = registering ? 'Google confirma tu identidad; después autorizas el acceso.' : 'Accede o regístrate con tu cuenta de Google.';
   $('#registerPrompt').textContent = registering ? '¿Ya tienes una cuenta?' : '¿No tienes cuenta?';
-  $('#toggleRegister').textContent = registering ? 'Iniciar sesión' : 'Registrarme con Google';
-  $('#loginForm').hidden = registering;
-  $('#authDivider').hidden = registering;
-  els.loginError.textContent = '';
+  $('#toggleRegister').textContent = registering ? 'Iniciar sesión' : 'Registrarse';
+  $('#confirmPasswordGroup').hidden = !registering;
+  $('#confirmPassword').required = registering;
+  $('#loginPassword').autocomplete = registering ? 'new-password' : 'current-password';
+  els.loginButton.textContent = registering ? 'Crear cuenta' : 'Entrar';
+  setAuthMessage();
 }
-function startGoogleAuth() {
-  if (!configIsValid()) throw new Error('Falta la configuración pública. Genera la web con scripts/build.py y revisa tu .env.');
-  // Google redirige al callback HTTPS de Supabase; Supabase vuelve a la URL autorizada de esta web.
-  // La ubicación actual debe figurar en Supabase > Authentication > URL Configuration > Redirect URLs.
-  const target = new URL('/auth/v1/authorize', BASE);
-  target.searchParams.set('provider', 'google');
-  target.searchParams.set('redirect_to', `${window.location.origin}${window.location.pathname}`);
-  window.location.assign(target.toString());
-}
-function extractOAuthResult() {
+function extractEmailConfirmation() {
   const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''));
   const query = new URLSearchParams(window.location.search);
-  const oauthError = fragment.get('error_description') || query.get('error_description') ||
+  const returnedError = fragment.get('error_description') || query.get('error_description') ||
     fragment.get('error') || query.get('error');
-  if (oauthError) {
+  if (returnedError) {
     window.history.replaceState(null, '', window.location.pathname);
-    throw new Error(`No se ha completado el acceso con Google: ${oauthError}`);
+    throw new Error(`No se ha podido confirmar el correo: ${returnedError}`);
   }
   const access_token = fragment.get('access_token');
   const refresh_token = fragment.get('refresh_token');
   if (!access_token && !refresh_token) return false;
-  // Eliminar los tokens de la barra de direcciones antes de cualquier solicitud o renderizado.
+  // Quitar los tokens del URL inmediatamente tras la confirmación por email.
   window.history.replaceState(null, '', window.location.pathname);
-  if (!access_token || !refresh_token) throw new Error('Google ha devuelto una sesión incompleta. Vuelve a intentarlo.');
+  sessionPersistence = 'session'; // El checkbox únicamente se selecciona en el login explícito.
+  $('#rememberSession').checked = false;
   saveSession({ access_token, refresh_token, expires_in: fragment.get('expires_in') });
   return true;
+}
+async function register(email, password) {
+  // email_redirect_to debe existir en la lista de Redirect URLs de Supabase.
+  const redirect = encodeURIComponent(`${window.location.origin}${window.location.pathname}`);
+  const result = await fetchJSON(`/auth/v1/signup?redirect_to=${redirect}`, {
+    method: 'POST', authenticated: false, body: { email, password }
+  });
+  $('#loginPassword').value = '';
+  $('#confirmPassword').value = '';
+  if (result?.access_token && result?.refresh_token) {
+    // Cuando no se exige confirmar correo, el alta puede devolver sesión.
+    sessionPersistence = $('#rememberSession').checked ? 'local' : 'session';
+    saveSession(result);
+    try {
+      await authorize();
+      showApp(); await loadAll();
+      return;
+    } catch (error) {
+      clearSession();
+      if (error.code !== 'PENDING_ACCESS') throw error;
+    }
+  }
+  setAuthMode('login');
+  setAuthMessage('Solicitud de registro recibida. Si Supabase te envía un correo, confírmalo. El acceso al inventario necesitará autorización.', 'success');
 }
 async function login(email, password) {
   const session = await fetchJSON('/auth/v1/token?grant_type=password', {
@@ -177,6 +223,7 @@ async function logout() {
   try { if (state.session) await fetchJSON('/auth/v1/logout', { method: 'POST' }); } catch { /* Cerrar también sin conexión. */ }
   clearSession(); state.accounts = []; state.variants = []; hideDrawer();
   els.app.hidden = true; els.login.hidden = false; $('#loginPassword').value = '';
+  $('#confirmPassword').value = ''; $('#rememberSession').checked = false; setAuthMode('login');
 }
 function rest(name, params = {}) {
   const query = new URLSearchParams(params);
@@ -481,18 +528,30 @@ function openSpecies(item) {
 }
 
 $('#toggleRegister').addEventListener('click', () => setAuthMode(authMode === 'register' ? 'login' : 'register'));
-$('#googleButton').addEventListener('click', () => {
-  try { els.loginError.textContent = ''; startGoogleAuth(); }
-  catch (error) { els.loginError.textContent = error.message; }
-});
-els.loginForm.addEventListener('submit',async(event)=>{
-  event.preventDefault();els.loginError.textContent='';els.loginButton.disabled=true;
-  els.loginButton.textContent='Comprobando acceso...';
+els.loginForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  setAuthMessage();
+  if (!els.loginForm.reportValidity()) return;
+  const email = $('#loginEmail').value.trim();
+  const password = $('#loginPassword').value;
+  const registering = authMode === 'register';
+  els.loginButton.disabled = true;
+  els.loginButton.textContent = registering ? 'Creando cuenta...' : 'Entrando...';
   try {
-    if(!configIsValid()) throw new Error('Falta configurar Supabase. Revisa el .env y vuelve a generar la web.');
-    await login($('#loginEmail').value.trim(),$('#loginPassword').value);
-  }catch(error){els.loginError.textContent=error.message;}
-  finally{els.loginButton.disabled=false;els.loginButton.innerHTML='Entrar <svg class="icon icon-sm"><use href="#i-arrow"></use></svg>';}
+    if (!configIsValid()) throw new Error('Falta configurar Supabase. Revisa el .env y vuelve a generar la web.');
+    if (registering) {
+      if (password.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres.');
+      if (password !== $('#confirmPassword').value) throw new Error('Las contraseñas no coinciden.');
+      await register(email, password);
+    } else {
+      sessionPersistence = $('#rememberSession').checked ? 'local' : 'session';
+      await login(email, password);
+    }
+  } catch (error) { setAuthMessage(error.message); }
+  finally {
+    els.loginButton.disabled = false;
+    els.loginButton.textContent = authMode === 'register' ? 'Crear cuenta' : 'Entrar';
+  }
 });
 document.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>setView(btn.dataset.view)));
 $('#logoutButton').addEventListener('click',logout);
@@ -515,19 +574,22 @@ els.drawerContent.addEventListener('click',(event)=>{if(event.target.closest('[d
 els.backdrop.addEventListener('click',hideDrawer);
 document.addEventListener('keydown',(event)=>{if(event.key==='Escape'&&!els.drawer.hidden)hideDrawer();});
 
-(async()=>{
-  if(!configIsValid()) {els.loginError.textContent='Configura el archivo .env y ejecuta python3 scripts/build.py.';return;}
+(async () => {
+  if (!configIsValid()) {
+    setAuthMessage('Configura el archivo .env y ejecuta python3 scripts/build.py.');
+    return;
+  }
   try {
-    const returnedFromGoogle = extractOAuthResult();
-    if (!returnedFromGoogle) {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_SESSION) || 'null');
-      if (!saved?.refresh_token) return;
-      state.session = saved;
-    }
-    await authorize();showApp();await loadAll();
-  }catch(error){
-    clearSession();els.app.hidden=true;els.login.hidden=false;
-    els.loginError.textContent = error.code === 'PENDING_ACCESS'
-      ? error.message : `No se pudo iniciar sesión. ${error.message}`;
+    const confirmed = extractEmailConfirmation();
+    if (!confirmed && !restoreStoredSession()) return;
+    await authorize();
+    showApp();
+    await loadAll();
+  } catch (error) {
+    clearSession();
+    els.app.hidden = true;
+    els.login.hidden = false;
+    setAuthMessage(error.code === 'PENDING_ACCESS'
+      ? error.message : `No se pudo iniciar sesión. ${error.message}`);
   }
 })();
