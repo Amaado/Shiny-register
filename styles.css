@@ -30,3 +30,13 @@
 .auth-notice:empty{display:none}
 .login-error{margin-top:15px}
 @media(max-width:420px){.login-card{padding-bottom:30px}}
+
+/* Inventario unificado, filtros múltiples y borrado individual */
+.filter-chip{cursor:pointer}.filter-clear{color:#cdd5d7;border-style:dashed}
+.capture-properties{display:block;margin-top:6px;color:#a3cfb8!important;line-height:1.5}
+.capture-actions{display:flex;gap:4px;align-items:center;flex:none}
+.capture-delete{display:grid;place-items:center;background:transparent;border:1px solid #49383a;color:#e1a6a4;width:31px;height:31px;border-radius:8px;cursor:pointer}
+.capture-delete:hover{background:#422c30;border-color:#a36667;color:#fff}
+.capture-delete:disabled{opacity:.5;cursor:wait}.capture-delete .icon{width:16px;height:16px}
+.inventory-capture{align-items:start;min-width:0}.inventory-capture .capture-row-main span{display:block;white-space:normal}
+.capture-more{width:100%;margin:14px 0}.drawer-account{min-width:0}

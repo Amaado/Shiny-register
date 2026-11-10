@@ -5,7 +5,7 @@ do $$
 declare found_id uuid;
 begin
   select id into found_id from auth.users
-    where lower(email) = lower('PON_AQUI_TU_CORREO') limit 1;
+    where lower(email) = lower('andresamadocibreiro22@gmail.com') limit 1;
   if found_id is null then
     raise exception 'Usuario inexistente. Créalo antes en Authentication > Users.';
   end if;

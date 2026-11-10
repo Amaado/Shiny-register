@@ -1,3 +1,7 @@
+# shiny-register-web 1.4 — una ficha por Pokémon
+
+**Actualización:** sigue primero `ACTUALIZACION_v1.4.md` y ejecuta la migración SQL 03 antes de publicar esta versión.
+
 # shiny-register-web v1.3 — Correo y contraseña
 
 Inventario web de Pokémon privado, con vistas de **Inventario** y **Cuentas**. No requiere Google, servicios de IA ni frameworks.

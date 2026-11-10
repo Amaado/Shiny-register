@@ -26,7 +26,7 @@ const FALLBACK = './assets/placeholder.svg';
 const number = new Intl.NumberFormat('es-ES');
 const state = {
   session: null, user: null, accounts: [], variants: [],
-  view: 'inventario', filter: 'todos', group: 'variantes', search: '',
+  view: 'inventario', filters: new Set(), search: '', canDelete: false, captures: [], drawerLimit: 50,
   visibleCount: DISPLAY_STEP, visibleItems: [], selectedAccount: null,
   accountItems: [], drawerVariants: [], drawerRequest: 0,
 };
@@ -100,7 +100,7 @@ function clearSession() {
   localStorage.removeItem(STORAGE_SESSION);
   sessionStorage.removeItem(STORAGE_SESSION);
   localStorage.removeItem(LEGACY_SESSION);
-  state.session = null; state.user = null; imageCache.clear();
+  state.session = null; state.user = null; state.canDelete = false; imageCache.clear();
 }
 function restoreStoredSession() {
   // Las sesiones de versiones anteriores (Google / persistencia obligatoria) no se migran.
@@ -212,12 +212,13 @@ async function login(email, password) {
 async function authorize() {
   state.user = await fetchJSON('/auth/v1/user');
   if (!state.user?.id) throw new Error('No se pudo verificar el usuario de Supabase.');
-  const allowed = await rest('sr_web_access', { select: 'user_id', user_id: `eq.${state.user.id}`, limit: '1' });
+  const allowed = await rest('sr_web_access', { select: 'user_id,can_delete', user_id: `eq.${state.user.id}`, limit: '1' });
   if (!Array.isArray(allowed) || !allowed.length) {
     const error = new Error(`Cuenta ${state.user.email || ''} registrada, pero pendiente de autorización. Usa sql/02_authorize_user.sql para darle acceso al inventario.`);
     error.code = 'PENDING_ACCESS';
     throw error;
   }
+  state.canDelete = allowed[0].can_delete === true;
 }
 async function logout() {
   try { if (state.session) await fetchJSON('/auth/v1/logout', { method: 'POST' }); } catch { /* Cerrar también sin conexión. */ }
@@ -239,357 +240,289 @@ async function allRows(view, order) {
   }
 }
 function showApp() {
-  els.login.hidden = true; els.app.hidden = false;
+  els.login.hidden = true;
+  els.app.hidden = false;
   els.sidebarUser.textContent = state.user?.email || '';
 }
-function statCard(label, value, note, featured = false) {
-  return `<div class="stat-card${featured ? ' featured' : ''}"><div class="stat-label">${escapeHTML(label)}<svg class="icon stat-icon"><use href="#i-layers"></use></svg></div><div class="stat-number">${format(value)}</div><div class="stat-note">${escapeHTML(note)}</div></div>`;
+function statCard(label,value,note,featured=false){
+  return `<div class="stat-card${featured?' featured':''}"><div class="stat-label">${escapeHTML(label)}<svg class="icon stat-icon"><use href="#i-layers"></use></svg></div><div class="stat-number">${format(value)}</div><div class="stat-note">${escapeHTML(note)}</div></div>`;
 }
-function emptyState(title, body) {
-  return `<div class="empty-state"><svg class="icon"><use href="#i-search"></use></svg><h3>${escapeHTML(title)}</h3><p>${escapeHTML(body)}</p></div>`;
-}
-function showLoading() {
-  els.grid.className = 'content-grid';
-  els.grid.innerHTML = `<div class="loading-grid">${Array.from({length:4},()=>'<div class="skeleton"></div>').join('')}</div>`;
-  els.footer.innerHTML = '';
-}
-function showError(message) {
-  els.grid.className = 'content-grid';
-  els.grid.innerHTML = `<div class="error-panel">${escapeHTML(message)}<br /><br />Comprueba el SQL de permisos, el acceso a Supabase y tu conexión.</div>`;
-  els.footer.innerHTML = '';
-}
-async function loadAll() {
-  const generation = ++loadGeneration;
-  showLoading();
-  $('#refreshButton').disabled = true;
-  try {
-    const [accounts, variants] = await Promise.all([
-      allRows('sr_web_accounts_summary', 'total_captures.desc,username.asc'),
-      allRows('sr_web_variants_summary', 'species.asc,form.asc'),
+function emptyState(title,body){return `<div class="empty-state"><h3>${escapeHTML(title)}</h3><p>${escapeHTML(body)}</p></div>`;}
+function showLoading(){els.grid.className='content-grid';els.grid.innerHTML='<div class="loading-grid">'+Array.from({length:4},()=>'<div class="skeleton"></div>').join('')+'</div>';els.footer.innerHTML='';}
+function showError(message){els.grid.className='content-grid';els.grid.innerHTML=`<div class="error-panel">${escapeHTML(message)}</div>`;els.footer.innerHTML='';}
+async function loadAll(){
+  const generation=++loadGeneration;
+  showLoading(); $('#refreshButton').disabled=true;
+  try{
+    const [accounts,captures] = await Promise.all([
+      allRows('sr_web_accounts_summary','total_captures.desc,username.asc'),
+      allRows('sr_web_captures','captured_at.desc'),
     ]);
-    if (generation !== loadGeneration) return;
-    state.accounts = accounts; state.variants = variants;
-    els.navAccountCount.textContent = format(accounts.filter(a=>a.account_id!=='unassigned').length);
-    state.selectedAccount = null; state.accountItems = [];
+    if(generation!==loadGeneration)return;
+    state.accounts=accounts;
+    state.captures=captures;
+    state.selectedAccount=null;
+    state.visibleCount=DISPLAY_STEP;
+    els.navAccountCount.textContent=format(accounts.filter(a=>a.account_id!=='unassigned').length);
     render();
-  } catch (error) { if (generation === loadGeneration) showError(error.message); }
-  finally { $('#refreshButton').disabled = false; }
+  }catch(error){if(generation===loadGeneration)showError(error.message);}
+  finally{$('#refreshButton').disabled=false;}
 }
-function renderStats() {
-  const accounts = state.accounts.filter(a=>a.account_id!=='unassigned');
-  const total = state.accounts.reduce((sum,a) => sum+amount(a.total_captures),0);
-  const variants = state.variants.filter(v=>amount(v.total_captures)>0);
-  const species = new Set(variants.map(v=>norm(v.species))).size;
-  const pending = state.accounts.reduce((sum,a)=>sum+amount(a.needs_review),0);
-  els.stats.innerHTML = [
-    statCard('Capturas totales',total,'Entre todas tus cuentas',true),
-    statCard('Especies',species,'Pokémon diferentes'),
-    statCard('Variantes',variants.length,'Formas, fondos y especiales'),
-    statCard('Cuentas',accounts.length,pending?`${format(pending)} capturas por revisar`:'Inventario sincronizado'),
+function displayName(account){
+  if (!account||account.account_id==='unassigned')return 'Sin asignar';
+  if (account.username)return account.username;
+  if (account.trainer_name)return account.trainer_name;
+  const key=account.account_key||'';
+  return key.startsWith('username:')||key.startsWith('trainer:')?key.split(':').slice(1).join(':'):'Cuenta sin nombre';
+}
+function accountAvatar(account){const name=displayName(account);return `<span class="account-avatar">${escapeHTML(name.slice(0,1).toUpperCase())}</span>`;}
+function tags(item){
+  const labels=[];
+  if(item.shiny)labels.push('<span class="property-tag shiny">✦ Shiny</span>');
+  if(item.background)labels.push(`<span class="property-tag bg">${escapeHTML(item.background_name||'Fondo')}</span>`);
+  if(item.gigantamax)labels.push('<span class="property-tag dmax">Gigamax</span>');
+  else if(item.dynamax)labels.push('<span class="property-tag dmax">Dinamax</span>');
+  if(item.shadow)labels.push('<span class="property-tag">Oscuro</span>');
+  if(item.purified)labels.push('<span class="property-tag">Purificado</span>');
+  return labels.join('') || '<span class="property-tag">Normal</span>';
+}
+function renderStats(){
+  const captures=state.captures;
+  const accounts=state.accounts.filter(a=>a.account_id!=='unassigned');
+  const species=new Set(captures.filter(c=>c.pokemon_name).map(c=>norm(c.pokemon_name)));
+  const pending=captures.filter(c=>c.status==='needs_review').length;
+  els.stats.innerHTML=[
+    statCard('Capturas',captures.length,'Ejemplares registrados',true),
+    statCard('Pokémon',species.size,'Una ficha por nombre'),
+    statCard('Cuentas',accounts.length,'Cuentas identificadas'),
+    statCard('Pendientes',pending,pending?'Capturas para revisar':'Todo revisado'),
   ].join('');
 }
-function updateNav() {
-  document.querySelectorAll('[data-view]').forEach(button => {
-    const active = button.dataset.view === state.view;
-    button.classList.toggle('active',active);
-    if (active) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current');
-  });
+function updateNav(){document.querySelectorAll('[data-view]').forEach(button=>{const active=button.dataset.view===state.view;button.classList.toggle('active',active);if(active)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});}
+function setView(view){
+  if(!['inventario','cuentas'].includes(view))return;
+  hideDrawer();state.view=view;state.search='';state.filters.clear();
+  state.selectedAccount=null;state.visibleCount=DISPLAY_STEP;els.search.value='';render();window.scrollTo({top:0,behavior:'smooth'});
 }
-function setView(view) {
-  if (!['inventario','cuentas'].includes(view)) return;
-  hideDrawer(); state.view = view; state.search = ''; state.filter = 'todos';
-  state.selectedAccount = null; state.accountItems = []; state.visibleCount = DISPLAY_STEP;
-  els.search.value = '';
-  render(); window.scrollTo({ top: 0, behavior:'smooth' });
+function matchesFilters(c){
+  const f=state.filters;
+  return (!f.has('shiny')||c.shiny===true)
+    && (!f.has('fondo')||c.background===true)
+    && (!f.has('dinamax')||c.dynamax===true||c.gigantamax===true)
+    && (!f.has('gigamax')||c.gigantamax===true);
 }
-function tags(item) {
-  const tags = [];
-  if (item.shiny) tags.push('<span class="property-tag shiny">✦ Shiny</span>');
-  if (item.background) tags.push(`<span class="property-tag bg">${escapeHTML(item.background_name || 'Fondo')}</span>`);
-  if (item.gigantamax) tags.push('<span class="property-tag dmax">Gigamax</span>');
-  else if (item.dynamax) tags.push('<span class="property-tag dmax">Dinamax</span>');
-  if (item.shadow) tags.push('<span class="property-tag">Oscuro</span>');
-  if (item.purified) tags.push('<span class="property-tag">Purificado</span>');
-  if (item.costume) tags.push(`<span class="property-tag">${escapeHTML(item.costume)}</span>`);
-  return tags.join('') || '<span class="property-tag">Normal</span>';
-}
-function displayName(account) {
-  if (!account) return 'Sin identificar';
-  if (account.account_id === 'unassigned') return 'Sin asignar';
-  if (account.username) return account.username;
-  if (account.trainer_name) return account.trainer_name;
-  const key = account.account_key || '';
-  return key.startsWith('username:') || key.startsWith('trainer:') ? key.split(':').slice(1).join(':') : 'Cuenta sin nombre';
-}
-function accountAvatar(account) {
-  const name = displayName(account);
-  const orphan = account?.account_id === 'unassigned';
-  return `<span class="account-avatar${orphan?' orphan':''}">${orphan?'?':escapeHTML(name.slice(0,1).toUpperCase())}</span>`;
-}
-function variantSubtitle(v) {
-  return [v.form, v.gender, v.background_name && v.background ? `Fondo ${v.background_name}` : ''].filter(Boolean).join(' · ') || 'Forma base';
-}
-function variantCard(item,index) {
-  const isSpecies = item._kind === 'species';
-  const count = amount(item.quantity ?? item.total_captures);
-  const image = safeImagePath(item.image_path);
-  const img = `<img alt="" loading="lazy" src="${FALLBACK}"${image ? ` data-image-path="${escapeHTML(image)}"` : ''}>`;
-  return `<button type="button" class="inventory-card" data-item-index="${index}" aria-label="Ver ${escapeHTML(item.species)}: ${format(count)} ejemplares">
-    <div class="pokemon-art">${img}${item.shiny && !isSpecies ? '<span class="art-corner shiny">✦ SHINY</span>' : ''}</div>
-    <div class="card-body"><div class="card-title-row"><h3 class="card-title">${escapeHTML(item.species || 'Sin identificar')}</h3><span class="card-quantity">${format(count)}<small>uds.</small></span></div>
-    <p class="card-subtitle">${escapeHTML(isSpecies ? `${format(item.variants.length)} variantes` : variantSubtitle(item))}</p>
-    <div class="property-tags">${isSpecies ? '<span class="property-tag">Todas las variantes</span>' : tags(item)}</div>
-    <div class="card-footer"><span>${isSpecies ? `${format(item.variants.length)} variantes` : `${format(item.account_count ?? 0)} ${amount(item.account_count)===1?'cuenta':'cuentas'}`}</span><span>Ver detalle <svg class="icon"><use href="#i-arrow"></use></svg></span></div></div>
-  </button>`;
-}
-function groupedSpecies(variants) {
-  const groups = new Map();
-  for (const v of variants) {
-    const key = norm(v.species);
-    if (!groups.has(key)) groups.set(key,{ _kind:'species', species:v.species, variants:[], total_captures:0, image_path:null });
-    const group=groups.get(key); group.variants.push(v); group.total_captures+=amount(v.total_captures);
-    if (!group.image_path && v.image_path) group.image_path=v.image_path;
-  }
-  return [...groups.values()].sort((a,b)=> a.species.localeCompare(b.species,'es'));
-}
-function filterVariants() {
-  const query = norm(state.search.trim());
-  return state.variants.filter(v => {
-    if (amount(v.total_captures) === 0) return false;
-    if (state.filter === 'shiny' && !v.shiny) return false;
-    if (state.filter === 'fondo' && !v.background) return false;
-    if (state.filter === 'dinamax' && !(v.dynamax || v.gigantamax)) return false;
-    if (state.filter === 'gigamax' && !v.gigantamax) return false;
-    return !query || norm([v.species,v.form,v.background_name,v.costume].filter(Boolean).join(' ')).includes(query);
-  });
-}
-function setupToolbar() {
-  els.filters.hidden = state.view !== 'inventario' || Boolean(state.selectedAccount);
-  els.switcher.hidden = state.view !== 'inventario';
-  els.toolbar.hidden = false;
-  els.search.placeholder = state.view === 'cuentas' && !state.selectedAccount ? 'Buscar cuenta...' : 'Buscar Pokémon...';
-  els.filters.innerHTML = [ ['todos','Todos'],['shiny','Shiny'],['fondo','Con fondo'],['dinamax','Dinamax'],['gigamax','Gigamax'] ].map(([id,label])=>
-    `<button type="button" class="filter-chip ${state.filter===id?'active':''}" data-filter="${id}" aria-pressed="${state.filter===id}">${label}</button>`).join('');
-  els.switcher.innerHTML = [['variantes','Variantes'],['especies','Especies']].map(([id,label])=>
-    `<button type="button" class="${state.group===id?'active':''}" data-group="${id}" aria-pressed="${state.group===id}">${label}</button>`).join('');
-}
-function renderInventory() {
-  const matched = filterVariants();
-  const items = state.group==='especies' ? groupedSpecies(matched) : matched;
-  state.visibleItems = items.slice(0,state.visibleCount);
-  els.sectionTitle.textContent = state.group==='especies' ? 'Por especie' : 'Todos los Pokémon';
-  els.sectionCount.textContent = `${format(items.length)} ${state.group==='especies'?'especies':'variantes'} encontradas`;
-  els.grid.className='content-grid';
-  els.grid.innerHTML = state.visibleItems.length ? state.visibleItems.map(variantCard).join('') : emptyState('Sin resultados','Prueba otra búsqueda o cambia el filtro.');
-  els.footer.innerHTML = items.length>state.visibleCount ? `<button type="button" class="button button-outline" data-load-more>Mostrar más (${format(items.length-state.visibleCount)})</button>` : '';
-  hydrateImages();
-}
-function renderAccountList() {
+function filteredCaptures(){
   const q=norm(state.search.trim());
-  const matched=state.accounts.filter(a=>amount(a.total_captures)>0 || a.account_id!=='unassigned').filter(a=>!q || norm([displayName(a),a.trainer_name,a.account_key].join(' ')).includes(q));
-  els.sectionTitle.textContent='Todas las cuentas';
-  els.sectionCount.textContent=`${format(matched.length)} cuentas encontradas`;
-  els.grid.className='content-grid account-grid';
-  els.grid.innerHTML=matched.length?matched.slice(0,state.visibleCount).map(a=>`<button class="account-card" type="button" data-account-id="${escapeHTML(a.account_id)}">${accountAvatar(a)}<div class="account-card-info"><h3>${escapeHTML(displayName(a))}</h3><p><strong>${format(a.total_captures)}</strong> Pokémon · ${format(a.distinct_variants)} variantes</p></div><svg class="icon"><use href="#i-arrow"></use></svg></button>`).join('') : emptyState('No hay cuentas','Cuando el bot registre capturas, aparecerán aquí.');
-  els.footer.innerHTML=matched.length>state.visibleCount?`<button class="button button-outline" type="button" data-load-more>Mostrar más (${format(matched.length-state.visibleCount)})</button>`:'';
+  return state.captures.filter(c=>{
+    if(state.selectedAccount && (c.account_id||'unassigned')!==state.selectedAccount.account_id)return false;
+    return matchesFilters(c) && (!q||norm([c.pokemon_name,c.form,c.costume,c.background_name].filter(Boolean).join(' ')).includes(q));
+  });
 }
-async function selectAccount(accountId) {
-  const account=state.accounts.find(a=>a.account_id===accountId);
-  if (!account) return;
-  state.selectedAccount=account; state.visibleCount=DISPLAY_STEP; state.search='';els.search.value='';
-  render(); showLoading();
-  try {
-    const rows=await allRowsForAccount(accountId);
-    if (state.selectedAccount?.account_id !== accountId) return;
-    state.accountItems=rows;
-    render();
-  } catch (error) { showError(error.message); }
-}
-async function allRowsForAccount(accountId) {
-  const query = accountId==='unassigned' ? 'eq.unassigned' : `eq.${accountId}`;
-  const data=[];
-  for (let offset=0;;offset+=PAGE_SIZE){
-    const page=await rest('sr_web_item_locations',{select:'*',account_id:query,order:'quantity.desc',limit:String(PAGE_SIZE),offset:String(offset)});
-    data.push(...page); if(page.length<PAGE_SIZE) return data;
+function groupPokemon(rows){
+  const items=new Map();
+  for(const c of rows){
+    const name=c.pokemon_name||'Sin identificar';
+    const key=norm(name);
+    if(!items.has(key))items.set(key,{name,captures:[],image_path:null,accounts:new Set(),shiny:false,background:false,dynamax:false,gigantamax:false});
+    const group=items.get(key);group.captures.push(c);group.accounts.add(c.account_id||'unassigned');
+    if(!group.image_path && c.image_path)group.image_path=c.image_path;
+    if(!group.fallback_image_path && c.card_image_path)group.fallback_image_path=c.card_image_path;
+    for(const flag of ['shiny','background','dynamax','gigantamax'])group[flag] ||= c[flag]===true;
   }
+  return [...items.values()].sort((a,b)=>a.name.localeCompare(b.name,'es'));
 }
-function renderAccountDetail() {
-  const account=state.selectedAccount;
-  const search=norm(state.search.trim());
-  const lookup=new Map(state.variants.map(v=>[v.variant_key,v]));
-  const items=state.accountItems.map(row=>({ ...(lookup.get(row.variant_key)||{species:'Sin identificar',form:null,shiny:false,background:false}),quantity:row.quantity,variant_key:row.variant_key,account_count:1 }))
-    .filter(item=>!search || norm([item.species,item.form,item.costume].filter(Boolean).join(' ')).includes(search));
-  state.visibleItems=items.slice(0,state.visibleCount);
-  els.sectionTitle.textContent='Pokémon de esta cuenta';
-  els.sectionCount.textContent=`${format(items.length)} variantes en esta cuenta`;
+function setupToolbar(){
+  const showFilters=state.view==='inventario'||Boolean(state.selectedAccount);
+  els.filters.hidden=!showFilters;els.switcher.hidden=true;
+  els.toolbar.hidden=false;
+  els.search.placeholder=state.view==='cuentas'&&!state.selectedAccount?'Buscar cuenta...':'Buscar Pokémon...';
+  els.filters.innerHTML=[['shiny','Shiny'],['fondo','Con fondo'],['dinamax','Dinamax'],['gigamax','Gigamax']]
+    .map(([id,label])=>`<button type="button" class="filter-chip ${state.filters.has(id)?'active':''}" data-filter="${id}" aria-pressed="${state.filters.has(id)}">${label}</button>`).join('')
+    +(state.filters.size?'<button class="filter-chip filter-clear" type="button" data-clear-filters="true">Limpiar</button>':'');
+}
+function pokemonCard(item,index){
+  const count=item.captures.length;
+  const path=safeImagePath(item.image_path);
+  const backup=safeImagePath(item.fallback_image_path);
+  const img=`<img alt="" loading="lazy" src="${FALLBACK}"${path?` data-image-path="${escapeHTML(path)}"`:''}${backup&&backup!==path?` data-fallback-image-path="${escapeHTML(backup)}"`:''}>`;
+  const filtered=state.filters.size>0;
+  return `<button type="button" class="inventory-card" data-item-index="${index}" aria-label="Ver ${escapeHTML(item.name)}, ${format(count)} ejemplares">
+    <div class="pokemon-art">${img}${item.shiny?'<span class="art-corner shiny">✦ SHINY</span>':''}</div>
+    <div class="card-body"><div class="card-title-row"><h3 class="card-title">${escapeHTML(item.name)}</h3><span class="card-quantity">${format(count)}<small>uds.</small></span></div>
+    <p class="card-subtitle">${filtered?'Coinciden con los filtros':'Todos los ejemplares'}</p>
+    <div class="property-tags">${tags(item)}</div>
+    <div class="card-footer"><span>${format(item.accounts.size)} ${item.accounts.size===1?'cuenta':'cuentas'}</span><span>Ver detalle <svg class="icon"><use href="#i-arrow"></use></svg></span></div></div></button>`;
+}
+function renderInventory(){
+  const items=groupPokemon(filteredCaptures());state.visibleItems=items.slice(0,state.visibleCount);
+  els.sectionTitle.textContent='Todos los Pokémon';
+  els.sectionCount.textContent=`${format(items.length)} Pokémon únicos · ${format(items.reduce((s,x)=>s+x.captures.length,0))} ejemplares`;
   els.grid.className='content-grid';
-  els.grid.innerHTML=`<div class="account-detail"><button class="back-link" data-back-accounts type="button"><svg class="icon icon-sm"><use href="#i-back"></use></svg> Volver a cuentas</button><div class="account-hero">${accountAvatar(account)}<div><h2>${escapeHTML(displayName(account))}</h2><p>${escapeHTML(account.trainer_name&&account.username ? `Entrenador: ${account.trainer_name}`:'Tu colección de esta cuenta')}</p></div><div class="hero-count">${format(account.total_captures)}<small>capturas</small></div></div></div>${state.visibleItems.length?state.visibleItems.map(variantCard).join(''):emptyState('No hay Pokémon','Esta cuenta no tiene variantes registradas con ese filtro.')}`;
-  els.footer.innerHTML=items.length>state.visibleCount?`<button class="button button-outline" type="button" data-load-more>Mostrar más (${format(items.length-state.visibleCount)})</button>`:'';
+  els.grid.innerHTML=state.visibleItems.length?state.visibleItems.map(pokemonCard).join(''):emptyState('Sin resultados','Prueba a desactivar algún filtro.');
+  els.footer.innerHTML=items.length>state.visibleCount?`<button class="button button-outline" data-load-more type="button">Mostrar más (${format(items.length-state.visibleCount)})</button>`:'';
   hydrateImages();
 }
-function render() {
+function renderAccountList(){
+  const q=norm(state.search.trim());
+  const matched=state.accounts.filter(a=>a.account_id!=='unassigned'||amount(a.total_captures)>0).filter(a=>!q||norm([displayName(a),a.trainer_name,a.account_key].join(' ')).includes(q));
+  els.sectionTitle.textContent='Todas las cuentas';els.sectionCount.textContent=`${format(matched.length)} cuentas`;
+  els.grid.className='content-grid account-grid';
+  els.grid.innerHTML=matched.length?matched.slice(0,state.visibleCount).map(a=>{
+    const count=state.captures.filter(c=>(c.account_id||'unassigned')===a.account_id);
+    const n=new Set(count.filter(c=>c.pokemon_name).map(c=>norm(c.pokemon_name))).size;
+    return `<button type="button" class="account-card" data-account-id="${escapeHTML(a.account_id)}">${accountAvatar(a)}<div class="account-card-info"><h3>${escapeHTML(displayName(a))}</h3><p><strong>${format(count.length)}</strong> capturas · ${format(n)} Pokémon</p></div><svg class="icon"><use href="#i-arrow"></use></svg></button>`;
+  }).join(''):emptyState('No hay cuentas','Las capturas aparecerán cuando el bot las registre.');
+  els.footer.innerHTML=matched.length>state.visibleCount?`<button class="button button-outline" data-load-more type="button">Mostrar más</button>`:'';
+}
+function selectAccount(id){
+  const account=state.accounts.find(a=>a.account_id===id);if(!account)return;
+  state.selectedAccount=account;state.visibleCount=DISPLAY_STEP;state.search='';state.filters.clear();els.search.value='';render();
+}
+function renderAccountDetail(){
+  const account=state.selectedAccount;
+  const items=groupPokemon(filteredCaptures());state.visibleItems=items.slice(0,state.visibleCount);
+  els.sectionTitle.textContent='Pokémon de esta cuenta';
+  els.sectionCount.textContent=`${format(items.length)} Pokémon · ${format(items.reduce((n,x)=>n+x.captures.length,0))} ejemplares`;
+  els.grid.className='content-grid';
+  const total=state.captures.filter(c=>(c.account_id||'unassigned')===account.account_id).length;
+  els.grid.innerHTML=`<div class="account-detail"><button class="back-link" data-back-accounts type="button"><svg class="icon icon-sm"><use href="#i-back"></use></svg> Volver a cuentas</button><div class="account-hero">${accountAvatar(account)}<div><h2>${escapeHTML(displayName(account))}</h2><p>Inventario de esta cuenta</p></div><div class="hero-count">${format(total)}<small>capturas</small></div></div></div>`
+    +(state.visibleItems.length?state.visibleItems.map(pokemonCard).join(''):emptyState('Sin resultados','No hay Pokémon que coincidan con esos filtros.'));
+  els.footer.innerHTML=items.length>state.visibleCount?`<button class="button button-outline" data-load-more type="button">Mostrar más</button>`:'';
+  hydrateImages();
+}
+function render(){
   updateNav();renderStats();setupToolbar();
   const accountView=state.view==='cuentas';
   els.title.textContent=accountView?'Cuentas':'Inventario';
-  els.description.textContent=accountView?'Descubre qué contiene cada una de tus cuentas.':'Cada captura, cada forma, cada fondo. Todo en un lugar.';
+  els.description.textContent=accountView?'Qué Pokémon tiene cada cuenta.':'Un Pokémon, una ficha. Todas sus capturas dentro.';
   els.breadcrumb.innerHTML=`Tu colección <svg class="icon icon-xs"><use href="#i-arrow"></use></svg> ${accountView?'Cuentas':'Inventario'}`;
-  if(accountView && state.selectedAccount){els.filters.hidden=true;els.switcher.hidden=true;renderAccountDetail();}
-  else if(accountView) renderAccountList(); else renderInventory();
+  if(accountView&&state.selectedAccount)renderAccountDetail();else if(accountView)renderAccountList();else renderInventory();
 }
-async function signImages(paths) {
-  const unique=[...new Set(paths.filter(safeImagePath))].filter(p=> !imageCache.get(p) || imageCache.get(p).expires < Date.now());
+async function signImages(paths){
+  const unique=[...new Set(paths.filter(safeImagePath))].filter(p=>!imageCache.get(p)||imageCache.get(p).expires<Date.now());
   for(let i=0;i<unique.length;i+=35){
     const batch=unique.slice(i,i+35);
-    try {
+    try{
       const response=await fetchJSON(`/storage/v1/object/sign/${encodeURIComponent(BUCKET)}`,{method:'POST',body:{expiresIn:3600,paths:batch}});
-      if(!Array.isArray(response)) continue;
+      if(!Array.isArray(response))continue;
       for(const item of response){
-        const path=item.path;
-        const signed=item.signedURL || item.signedUrl;
-        if(!path || !signed || item.error) continue;
+        const path=item.path,signed=item.signedURL||item.signedUrl;
+        if(!path||!signed||item.error)continue;
         let url;
-        if (signed.startsWith('https://')) url=signed;
-        else if (signed.startsWith('/storage/v1/')) url=BASE+signed;
-        else if(signed.startsWith('/object/')) url=BASE+'/storage/v1'+signed;
+        if(signed.startsWith('https://'))url=signed;
+        else if(signed.startsWith('/storage/v1/'))url=BASE+signed;
+        else if(signed.startsWith('/object/'))url=BASE+'/storage/v1'+signed;
         else continue;
-        const parsed = new URL(url);
-        if(parsed.origin!==new URL(BASE).origin) continue;
+        const parsed=new URL(url);if(parsed.origin!==new URL(BASE).origin)continue;
         imageCache.set(path,{url:parsed.href,expires:Date.now()+45*60*1000});
       }
-    }catch(error){ console.warn('No se han podido firmar algunas imágenes:',error.message); }
+    }catch(error){console.warn('Error al firmar imágenes:',error.message);}
   }
 }
-async function hydrateImages() {
-  const nodes=[...document.querySelectorAll('img[data-image-path]')];
-  const missing=[];
-  for(const img of nodes){const path=img.dataset.imagePath;const cached=imageCache.get(path);
-    if(cached && cached.expires>Date.now()) img.src=cached.url;else missing.push(path);
+async function hydrateImages(){
+  const nodes=[...document.querySelectorAll('img[data-image-path],img[data-fallback-image-path]')];
+  const paths=[];
+  for(const img of nodes){
+    if(img.dataset.imagePath)paths.push(img.dataset.imagePath);
+    if(img.dataset.fallbackImagePath)paths.push(img.dataset.fallbackImagePath);
   }
-  if(!missing.length)return;
-  await signImages(missing);
-  for(const img of nodes){if(!img.isConnected)return;const cached=imageCache.get(img.dataset.imagePath);
-    if(cached && cached.expires>Date.now()){
-      img.addEventListener('error',()=>{img.removeAttribute('data-image-path');img.src=FALLBACK;},{once:true});
-      img.src=cached.url;
-    }
+  await signImages(paths);
+  for(const img of nodes){
+    if(!img.isConnected)continue;
+    const primary=imageCache.get(img.dataset.imagePath);
+    const backup=imageCache.get(img.dataset.fallbackImagePath);
+    const primaryUrl=primary&&primary.expires>Date.now()?primary.url:null;
+    const backupUrl=backup&&backup.expires>Date.now()?backup.url:null;
+    img.addEventListener('error',()=>{
+      if(backupUrl&&img.src!==backupUrl){img.src=backupUrl;return;}
+      img.src=FALLBACK;
+    });
+    img.src=primaryUrl||backupUrl||FALLBACK;
   }
-}
-function openDrawer(content) {
-  els.drawerContent.innerHTML=content;
-  els.drawer.hidden=false;els.backdrop.hidden=false;
-  document.body.style.overflow='hidden';
-  hydrateImages();
-}
-function hideDrawer() {
-  ++state.drawerRequest;
-  els.drawer.hidden=true;els.backdrop.hidden=true;
-  document.body.style.overflow='';
-}
-function drawerHeader() {
-  return `<button type="button" class="icon-button drawer-close" data-close-drawer aria-label="Cerrar detalles"><svg class="icon"><use href="#i-close"></use></svg></button>`;
-}
-function drawerArt(variant) {
-  const path=safeImagePath(variant.image_path);
-  return `<div class="drawer-art"><img alt="${escapeHTML(variant.species)}" loading="eager" src="${FALLBACK}"${path?` data-image-path="${escapeHTML(path)}"`:''}></div>`;
-}
-function drawerNum(label,num){return `<div class="drawer-number"><strong>${format(num)}</strong><span>${escapeHTML(label)}</span></div>`;}
-async function openVariant(variant) {
-  if(!variant?.variant_key){
-    openDrawer(drawerHeader()+`<div class="drawer-body"><h2 class="drawer-title">Sin identificar</h2><p class="muted">El bot no ha reconocido todavía qué Pokémon es. Comprueba el registro pendiente en Supabase.</p></div>`);
-    return;
-  }
-  const request=++state.drawerRequest;
-  openDrawer(drawerHeader()+drawerArt(variant)+`<div class="drawer-body"><p class="drawer-eyebrow">FICHA DEL POKÉMON</p><h2 class="drawer-title">${escapeHTML(variant.species)}</h2><p class="drawer-subtitle">${escapeHTML(variantSubtitle(variant))}</p><div class="drawer-tags">${tags(variant)}</div><div class="drawer-numbers">${drawerNum('Ejemplares totales',variant.total_captures)}${drawerNum('Cuentas',variant.account_count)}</div><div class="drawer-section"><div class="drawer-heading"><h3>¿Dónde lo tengo?</h3></div><div class="drawer-loading">Buscando las cuentas...</div></div></div>`);
-  const locationsPromise=rest('sr_web_item_locations',{select:'*',variant_key:`eq.${variant.variant_key}`,order:'quantity.desc',limit:'500'});
-  const capturesPromise=rest('sr_captures',{select:'discord_jump_url,captured_at,account_id,cp,iv_percent,pokemon_level,status',variant_key:`eq.${variant.variant_key}`,order:'captured_at.desc',limit:'8'});
-  try {
-    const [locations,captures]=await Promise.all([locationsPromise,capturesPromise]);
-    if(request!==state.drawerRequest) return;
-    const accounts=new Map(state.accounts.map(a=>[a.account_id,a]));
-    const locationHTML=locations.length ? locations.map(loc=>{
-      const account=accounts.get(loc.account_id)||{account_id:'unassigned'};
-      return `<div class="drawer-account">${accountAvatar(account)}<span class="drawer-account-name">${escapeHTML(displayName(account))}</span><strong class="drawer-account-count">×${format(loc.quantity)}</strong></div>`;
-    }).join('') : '<p class="muted">Todavía no hay cuentas asociadas.</p>';
-    const capturesHTML=captures.length ? captures.map(c=>{
-      const account=state.accounts.find(a=>a.account_id===c.account_id);
-      const name=displayName(account);
-      const iv=c.iv_percent===null?'IV sin dato':`IV ${format(c.iv_percent)}%`;
-      const pc=c.cp===null?'PC sin dato':`PC ${format(c.cp)}`;
-      const link=safeDiscordLink(c.discord_jump_url);
-      return `<div class="capture-row"><div class="capture-row-main"><strong>${escapeHTML(name)} · ${escapeHTML(dateLabel(c.captured_at))}</strong><span>${escapeHTML(pc)} · ${escapeHTML(iv)}${c.pokemon_level!==null?` · Niv. ${escapeHTML(c.pokemon_level)}`:''}</span></div>${link?`<a title="Abrir en Discord" target="_blank" rel="noopener noreferrer" href="${escapeHTML(link)}"><svg class="icon"><use href="#i-external"></use></svg></a>`:''}</div>`;
-    }).join(''):'<p class="muted">Sin capturas recientes.</p>';
-    openDrawer(drawerHeader()+drawerArt(variant)+`<div class="drawer-body"><p class="drawer-eyebrow">FICHA DEL POKÉMON</p><h2 class="drawer-title">${escapeHTML(variant.species)}</h2><p class="drawer-subtitle">${escapeHTML(variantSubtitle(variant))}</p><div class="drawer-tags">${tags(variant)}</div><div class="drawer-numbers">${drawerNum('Ejemplares totales',variant.total_captures)}${drawerNum('Cuentas',variant.account_count)}</div><section class="drawer-section"><div class="drawer-heading"><h3>¿Dónde lo tengo?</h3><small>${format(locations.length)} cuentas</small></div>${locationHTML}</section><section class="drawer-section"><div class="drawer-heading"><h3>Últimas capturas</h3><small>Máximo 8</small></div>${capturesHTML}</section></div>`);
-  }catch(error){if(request===state.drawerRequest)openDrawer(drawerHeader()+`<div class="drawer-body"><h2 class="drawer-title">${escapeHTML(variant.species)}</h2><div class="error-panel">${escapeHTML(error.message)}</div></div>`);}
-}
-function openSpecies(item) {
-  state.drawerVariants=item.variants;
-  const list=item.variants.map((v,i)=>`<button type="button" data-drawer-variant="${i}" class="drawer-account" style="width:100%;background:transparent;border-top:0;border-left:0;border-right:0;color:inherit;text-align:left;cursor:pointer"><span class="account-avatar">${v.shiny?'✦':'•'}</span><span class="drawer-account-name">${escapeHTML(variantSubtitle(v))}<br><span class="muted">${escapeHTML(v.shiny?'Shiny':'Normal')}</span></span><strong class="drawer-account-count">×${format(v.total_captures)}</strong><svg class="icon icon-sm"><use href="#i-arrow"></use></svg></button>`).join('');
-  openDrawer(drawerHeader()+drawerArt(item)+`<div class="drawer-body"><p class="drawer-eyebrow">ESPECIE</p><h2 class="drawer-title">${escapeHTML(item.species)}</h2><p class="drawer-subtitle">Todas las variantes de este Pokémon.</p><div class="drawer-numbers">${drawerNum('Ejemplares',item.total_captures)}${drawerNum('Variantes',item.variants.length)}</div><section class="drawer-section"><div class="drawer-heading"><h3>Variantes registradas</h3></div>${list}</section></div>`);
 }
 
-$('#toggleRegister').addEventListener('click', () => setAuthMode(authMode === 'register' ? 'login' : 'register'));
-els.loginForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  setAuthMessage();
-  if (!els.loginForm.reportValidity()) return;
-  const email = $('#loginEmail').value.trim();
-  const password = $('#loginPassword').value;
-  const registering = authMode === 'register';
-  els.loginButton.disabled = true;
-  els.loginButton.textContent = registering ? 'Creando cuenta...' : 'Entrando...';
-  try {
-    if (!configIsValid()) throw new Error('Falta configurar Supabase. Revisa el .env y vuelve a generar la web.');
-    if (registering) {
-      if (password.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres.');
-      if (password !== $('#confirmPassword').value) throw new Error('Las contraseñas no coinciden.');
-      await register(email, password);
-    } else {
-      sessionPersistence = $('#rememberSession').checked ? 'local' : 'session';
-      await login(email, password);
-    }
-  } catch (error) { setAuthMessage(error.message); }
-  finally {
-    els.loginButton.disabled = false;
-    els.loginButton.textContent = authMode === 'register' ? 'Crear cuenta' : 'Entrar';
-  }
+function openDrawer(content){els.drawerContent.innerHTML=content;els.drawer.hidden=false;els.backdrop.hidden=false;document.body.style.overflow='hidden';hydrateImages();}
+function hideDrawer(){++state.drawerRequest;els.drawer.hidden=true;els.backdrop.hidden=true;document.body.style.overflow='';}
+function drawerHeader(){return `<button type="button" class="icon-button drawer-close" data-close-drawer aria-label="Cerrar detalles"><svg class="icon"><use href="#i-close"></use></svg></button>`;}
+function drawerArt(item){const path=safeImagePath(item.image_path),backup=safeImagePath(item.fallback_image_path);return `<div class="drawer-art"><img alt="${escapeHTML(item.name)}" src="${FALLBACK}"${path?` data-image-path="${escapeHTML(path)}"`:''}${backup&&backup!==path?` data-fallback-image-path="${escapeHTML(backup)}"`:''}></div>`;}
+function drawerNum(label,num){return `<div class="drawer-number"><strong>${format(num)}</strong><span>${escapeHTML(label)}</span></div>`;}
+function captureTags(c){return [c.form?`Forma: ${c.form}`:null,c.shiny?'Shiny':null,c.background?`Fondo${c.background_name?' '+c.background_name:''}`:'Sin fondo',c.gigantamax?'Gigamax':c.dynamax?'Dinamax':null,c.size?`Tamaño ${c.size}`:null].filter(Boolean).join(' · ');}
+function captureRow(c){
+  const account=state.accounts.find(a=>a.account_id===(c.account_id||'unassigned'));
+  const name=displayName(account);
+  const pc=c.cp===null?'PC —':`PC ${format(c.cp)}`;
+  const iv=c.iv_percent===null?'IV —':`IV ${format(c.iv_percent)}%`;
+  const indiv=[c.iv_attack,c.iv_defense,c.iv_stamina].every(v=>v!==null) ? ` (${c.iv_attack}/${c.iv_defense}/${c.iv_stamina})` : '';
+  const level=c.pokemon_level===null?'Nivel —':`Nivel ${c.pokemon_level}`;
+  const link=safeDiscordLink(c.discord_jump_url);
+  return `<div class="capture-row inventory-capture"><div class="capture-row-main"><strong>${escapeHTML(name)} · ${escapeHTML(dateLabel(c.captured_at))}</strong><span>${escapeHTML(pc+' · '+iv+indiv+' · '+level)}</span><span class="capture-properties">${escapeHTML(captureTags(c))}</span></div><div class="capture-actions">${link?`<a title="Ver mensaje en Discord" target="_blank" rel="noopener noreferrer" href="${escapeHTML(link)}"><svg class="icon"><use href="#i-external"></use></svg></a>`:''}${state.canDelete?`<button type="button" class="capture-delete" data-delete-capture="${escapeHTML(c.discord_message_id)}" aria-label="Eliminar captura de ${escapeHTML(c.pokemon_name||'desconocido')}" title="Eliminar esta captura"><svg class="icon"><use href="#i-trash"></use></svg></button>`:''}</div></div>`;
+}
+function openPokemon(item){state.drawerLimit=50;state.drawerPokemon=item.name;renderDrawerPokemon();}
+function renderDrawerPokemon(){
+  const name=state.drawerPokemon;
+  // Aquí se muestran TODOS los ejemplares del Pokémon de la cuenta seleccionada,
+  // aunque en el listado hubiera filtros activos. El contador no se duplica.
+  const all=state.captures.filter(c=>(c.pokemon_name||'Sin identificar')===name&&(!state.selectedAccount||(c.account_id||'unassigned')===state.selectedAccount.account_id));
+  const items=groupPokemon(all),item=items[0];if(!item){hideDrawer();return;}
+  const locations=new Map();for(const c of all){const k=c.account_id||'unassigned';locations.set(k,(locations.get(k)||0)+1);}
+  const list=[...locations].sort((a,b)=>b[1]-a[1]).map(([id,count])=>{
+    const acct=state.accounts.find(a=>a.account_id===id)||{account_id:'unassigned'};
+    return `<div class="drawer-account">${accountAvatar(acct)}<span class="drawer-account-name">${escapeHTML(displayName(acct))}</span><strong class="drawer-account-count">×${format(count)}</strong></div>`;
+  }).join('');
+  const visible=all.slice(0,state.drawerLimit);
+  openDrawer(drawerHeader()+drawerArt(item)+`<div class="drawer-body"><p class="drawer-eyebrow">FICHA DEL POKÉMON</p><h2 class="drawer-title">${escapeHTML(name)}</h2><p class="drawer-subtitle">Un solo Pokémon, cada captura con sus propios atributos.</p><div class="drawer-numbers">${drawerNum('Ejemplares totales',all.length)}${drawerNum('Cuentas',locations.size)}</div><section class="drawer-section"><div class="drawer-heading"><h3>¿Dónde lo tengo?</h3></div>${list}</section><section class="drawer-section"><div class="drawer-heading"><h3>Capturas individuales</h3><small>${format(all.length)}</small></div>${visible.map(captureRow).join('')}${all.length>visible.length?`<button class="button button-outline capture-more" data-drawer-more type="button">Mostrar más (${format(all.length-visible.length)})</button>`:''}</section></div>`);
+}
+async function deleteCapture(id){
+  if(!state.canDelete)return;
+  const capture=state.captures.find(c=>c.discord_message_id===id);if(!capture)return;
+  const account=state.accounts.find(a=>a.account_id===(capture.account_id||'unassigned'));
+  if(!window.confirm(`¿Eliminar esta captura de ${capture.pokemon_name||'Pokémon desconocido'} de la cuenta ${displayName(account)}?\n\nSe eliminará del inventario y no se volverá a importar desde Discord.`))return;
+  const button=els.drawerContent.querySelector(`[data-delete-capture="${id}"]`);
+  if(button)button.disabled=true;
+  try{
+    const removed=await fetchJSON('/rest/v1/rpc/sr_delete_capture',{method:'POST',body:{message_id:id}});
+    if(removed!==true)throw new Error('La captura ya no estaba disponible.');
+    hideDrawer();await loadAll();
+  }catch(error){window.alert(`No se ha podido borrar la captura: ${error.message}`);if(button&&button.isConnected)button.disabled=false;}
+}
+
+$('#toggleRegister').addEventListener('click',()=>setAuthMode(authMode==='register'?'login':'register'));
+els.loginForm.addEventListener('submit',async(event)=>{
+  event.preventDefault();setAuthMessage();if(!els.loginForm.reportValidity())return;
+  const email=$('#loginEmail').value.trim(),password=$('#loginPassword').value,registering=authMode==='register';
+  els.loginButton.disabled=true;els.loginButton.textContent=registering?'Creando cuenta...':'Entrando...';
+  try{
+    if(!configIsValid())throw new Error('Falta configurar Supabase.');
+    if(registering){if(password.length<8)throw new Error('Mínimo 8 caracteres.');if(password!==$('#confirmPassword').value)throw new Error('Las contraseñas no coinciden.');await register(email,password);}
+    else{sessionPersistence=$('#rememberSession').checked?'local':'session';await login(email,password);}
+  }catch(error){setAuthMessage(error.message);}finally{els.loginButton.disabled=false;els.loginButton.textContent=authMode==='register'?'Crear cuenta':'Entrar';}
 });
 document.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>setView(btn.dataset.view)));
 $('#logoutButton').addEventListener('click',logout);
 $('#refreshButton').addEventListener('click',loadAll);
 els.search.addEventListener('input',()=>{state.search=els.search.value;state.visibleCount=DISPLAY_STEP;render();});
-els.filters.addEventListener('click',(event)=>{const btn=event.target.closest('[data-filter]');if(!btn)return;state.filter=btn.dataset.filter;state.visibleCount=DISPLAY_STEP;render();});
-els.switcher.addEventListener('click',(event)=>{const btn=event.target.closest('[data-group]');if(!btn)return;state.group=btn.dataset.group;state.visibleCount=DISPLAY_STEP;render();});
-els.grid.addEventListener('click',(event)=>{
-  const accountButton=event.target.closest('[data-account-id]');
-  if(accountButton){selectAccount(accountButton.dataset.accountId);return;}
-  const back=event.target.closest('[data-back-accounts]');
-  if(back){state.selectedAccount=null;state.accountItems=[];state.search='';els.search.value='';state.visibleCount=DISPLAY_STEP;render();return;}
-  const itemButton=event.target.closest('[data-item-index]');
-  if(itemButton){const item=state.visibleItems[Number(itemButton.dataset.itemIndex)];
-    if(item?._kind==='species') openSpecies(item);else if(item)openVariant(item);
-  }
+els.filters.addEventListener('click',event=>{
+  if(event.target.closest('[data-clear-filters]'))state.filters.clear();
+  else{const btn=event.target.closest('[data-filter]');if(!btn)return;const id=btn.dataset.filter;if(state.filters.has(id))state.filters.delete(id);else state.filters.add(id);}
+  state.visibleCount=DISPLAY_STEP;render();
 });
-els.footer.addEventListener('click',(event)=>{if(event.target.closest('[data-load-more]')){state.visibleCount+=DISPLAY_STEP;render();}});
-els.drawerContent.addEventListener('click',(event)=>{if(event.target.closest('[data-close-drawer]'))hideDrawer();const btn=event.target.closest('[data-drawer-variant]');if(btn){const item=state.drawerVariants[Number(btn.dataset.drawerVariant)];if(item)openVariant(item);}});
+els.grid.addEventListener('click',event=>{
+  const account=event.target.closest('[data-account-id]');if(account){selectAccount(account.dataset.accountId);return;}
+  if(event.target.closest('[data-back-accounts]')){state.selectedAccount=null;state.search='';state.filters.clear();els.search.value='';render();return;}
+  const btn=event.target.closest('[data-item-index]');if(btn){const item=state.visibleItems[Number(btn.dataset.itemIndex)];if(item)openPokemon(item);}
+});
+els.footer.addEventListener('click',event=>{if(event.target.closest('[data-load-more]')){state.visibleCount+=DISPLAY_STEP;render();}});
+els.drawerContent.addEventListener('click',event=>{
+  if(event.target.closest('[data-close-drawer]')){hideDrawer();return;}
+  if(event.target.closest('[data-drawer-more]')){state.drawerLimit+=50;renderDrawerPokemon();return;}
+  const btn=event.target.closest('[data-delete-capture]');if(btn)deleteCapture(btn.dataset.deleteCapture);
+});
 els.backdrop.addEventListener('click',hideDrawer);
-document.addEventListener('keydown',(event)=>{if(event.key==='Escape'&&!els.drawer.hidden)hideDrawer();});
-
-(async () => {
-  if (!configIsValid()) {
-    setAuthMessage('Configura el archivo .env y ejecuta python3 scripts/build.py.');
-    return;
-  }
-  try {
-    const confirmed = extractEmailConfirmation();
-    if (!confirmed && !restoreStoredSession()) return;
-    await authorize();
-    showApp();
-    await loadAll();
-  } catch (error) {
-    clearSession();
-    els.app.hidden = true;
-    els.login.hidden = false;
-    setAuthMessage(error.code === 'PENDING_ACCESS'
-      ? error.message : `No se pudo iniciar sesión. ${error.message}`);
-  }
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!els.drawer.hidden)hideDrawer();});
+(async()=>{
+  if(!configIsValid()){setAuthMessage('Configura .env y vuelve a generar la web.');return;}
+  try{
+    const confirmed=extractEmailConfirmation();if(!confirmed&&!restoreStoredSession())return;
+    await authorize();showApp();await loadAll();
+  }catch(error){clearSession();els.app.hidden=true;els.login.hidden=false;setAuthMessage(error.code==='PENDING_ACCESS'?error.message:`No se pudo iniciar sesión. ${error.message}`);}
 })();
