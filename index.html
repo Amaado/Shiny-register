@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b1014" />
+  <meta name="description" content="shiny-register · Inventario privado de Pokémon por cuenta y variante." />
+  <title>shiny-register · Inventario</title>
+  <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <svg class="svg-icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="m3 7 9-4 9 4v10l-9 4-9-4V7Z"/><path d="m3 7 9 4 9-4M12 11v10"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 20v-2a4 4 0 0 0-3-3.87M16 2.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.9-3M4 4v5h5M4 13a8 8 0 0 0 14.9 3M20 20v-5h-5"/></symbol>
+    <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M12 5h7v7M19 5l-9 9M19 13v6H5V5h6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="m12 3 10 18H2L12 3ZM12 9v4m0 4h.01"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="m12 2 1.9 7.1L21 11l-7.1 1.9L12 20l-1.9-7.1L3 11l7.1-1.9L12 2Zm7 14 .5 1.5L21 18l-1.5.5L19 20l-.5-1.5L17 18l1.5-.5L19 16Z"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 22 0 0C5 19 3 15 3 9V5l9-3 9 3v4c0 6-2 10-9 13Z"/><path d="m8 12 3 3 5-6"/></symbol>
+  </svg>
+
+  <main id="loginScreen" class="login-screen" aria-labelledby="loginTitle">
+    <div class="login-halo halo-one"></div><div class="login-halo halo-two"></div>
+    <div class="login-card">
+      <div class="mark mark-large" aria-hidden="true"><span class="mark-center"></span></div>
+      <div class="login-eyebrow">INVENTARIO PRIVADO</div>
+      <h1 id="loginTitle">Todo lo que has capturado.<br /><span>En un solo lugar.</span></h1>
+      <p id="authIntro" class="login-intro">Tus Pokémon, sus variantes y las cuentas en las que están. Sin complicaciones.</p>
+      <div class="google-auth">
+        <button id="googleButton" class="google-button" type="button">
+          <svg class="google-icon" viewBox="0 0 48 48" role="img" aria-label="Google">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6C44.4 38.03 46.98 31.86 46.98 24.55z"/>
+            <path fill="#FBBC05" d="M10.53 28.59A14.41 14.41 0 0 1 9.75 24c0-1.59.27-3.13.76-4.59l-7.98-6.2A23.9 23.9 0 0 0 0 24c0 3.87.92 7.54 2.56 10.79l7.97-6.2z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.91-5.8l-7.73-6C30.03 37.65 27.4 38.5 24 38.5c-6.26 0-11.57-4.22-13.47-9.91l-7.97 6.2C6.51 42.63 14.62 48 24 48z"/>
+          </svg>
+          <span id="googleButtonLabel">Continuar con Google</span>
+        </button>
+        <p id="googleHelp" class="google-help">Accede o regístrate con tu cuenta de Google.</p>
+      </div>
+      <div id="authDivider" class="auth-divider"><span>o con correo y contraseña</span></div>
+      <form id="loginForm" class="login-form">
+        <label for="loginEmail">Correo electrónico</label>
+        <input type="email" id="loginEmail" placeholder="tu@email.com" autocomplete="username" required />
+        <label for="loginPassword">Contraseña</label>
+        <input type="password" id="loginPassword" placeholder="Tu contraseña" autocomplete="current-password" required />
+        <button class="button button-primary login-button" id="loginButton" type="submit">Entrar <svg class="icon icon-sm"><use href="#i-arrow"></use></svg></button>
+      </form>
+      <p id="loginError" class="login-error" role="alert" aria-live="polite"></p>
+      <div class="register-switch" id="registerSwitch">
+        <span id="registerPrompt">¿No tienes cuenta?</span>
+        <button type="button" id="toggleRegister">Registrarme con Google</button>
+      </div>
+      <p class="login-footnote"><svg class="icon icon-sm"><use href="#i-shield"></use></svg> Inventario privado · Acceso autorizado</p>
+    </div>
+    <div class="login-bottom">shiny-register <span>·</span> WEB</div>
+  </main>
+
+  <div id="appShell" class="app-shell" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <div class="brand"><div class="mark" aria-hidden="true"><span class="mark-center"></span></div><div class="brand-text">shiny-register<span>INVENTORY</span></div></div>
+        <div class="sidebar-label">EXPLORAR</div>
+        <nav class="main-nav" aria-label="Menú principal">
+          <button class="nav-link active" type="button" data-view="inventario" aria-current="page"><svg class="icon"><use href="#i-box"></use></svg><span>Inventario</span></button>
+          <button class="nav-link" type="button" data-view="cuentas"><svg class="icon"><use href="#i-users"></use></svg><span>Cuentas</span><span id="navAccountCount" class="nav-count"></span></button>
+        </nav>
+      </div>
+      <div class="sidebar-bottom">
+        <div class="sidebar-status"><span class="status-dot"></span><span>Conectado a Supabase</span></div>
+        <div id="sidebarUser" class="sidebar-user"></div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="mobile-brand"><div class="mark" aria-hidden="true"><span class="mark-center"></span></div><strong>shiny-register</strong></div>
+        <span id="breadcrumb" class="breadcrumb">Tu colección <svg class="icon icon-xs"><use href="#i-arrow"></use></svg> Inventario</span>
+        <div class="top-actions"><button id="refreshButton" class="icon-button" type="button" title="Actualizar datos" aria-label="Actualizar datos"><svg class="icon"><use href="#i-refresh"></use></svg></button><button id="logoutButton" class="icon-button" type="button" title="Cerrar sesión" aria-label="Cerrar sesión"><svg class="icon"><use href="#i-log-out"></use></svg></button></div>
+      </header>
+
+      <main id="mainContent" class="main-content">
+        <div class="content-heading"><div><div class="eyebrow">TU COLECCIÓN, EN ORDEN</div><h1 id="pageTitle">Inventario</h1><p id="pageDescription" class="muted">Todos tus Pokémon, organizados en un mismo sitio.</p></div><div class="content-version"><span class="status-dot"></span> CONECTADO</div></div>
+        <div id="statsGrid" class="stats-grid" aria-label="Resumen de inventario"></div>
+        <div id="contentToolbar" class="content-toolbar"><div class="search-box"><svg class="icon"><use href="#i-search"></use></svg><input id="searchInput" type="search" placeholder="Buscar Pokémon..." autocomplete="off" aria-label="Buscar" /></div><div id="filterGroup" class="filter-group"></div></div>
+        <div class="section-heading"><div><h2 id="sectionTitle">Todos los Pokémon</h2><p id="sectionCount" class="muted"></p></div><div id="viewSwitcher" class="view-switcher" hidden></div></div>
+        <div id="contentGrid" class="content-grid" aria-live="polite"></div>
+        <div id="listFooter" class="list-footer"></div>
+      </main>
+      <footer class="site-footer">shiny-register <span>·</span> Tu inventario, sin distracciones.</footer>
+    </div>
+
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+    <aside id="detailDrawer" class="detail-drawer" aria-label="Detalles" aria-modal="true" role="dialog" hidden><div id="drawerContent"></div></aside>
+
+    <nav class="mobile-nav" aria-label="Menú móvil"><button type="button" class="mobile-nav-link active" data-view="inventario"><svg class="icon"><use href="#i-box"></use></svg><span>Inventario</span></button><button type="button" class="mobile-nav-link" data-view="cuentas"><svg class="icon"><use href="#i-users"></use></svg><span>Cuentas</span></button></nav>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

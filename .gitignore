@@ -1,0 +1,14 @@
+
+# Configuración privada
+.env
+.env.*
+!.env.example
+config.js
+config.js.backup
+
+# Copias de seguridad
+*.bak
+*.backup
+
+# Archivos generados
+dist/
